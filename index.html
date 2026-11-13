@@ -79,6 +79,8 @@ textarea:focus,input:focus,select:focus{outline:2px solid var(--gold);outline-of
 .hist .q{font-family:Lora,Georgia,serif;font-size:14px;line-height:1.35}
 .hist .m{font-size:11.5px;color:var(--mut);margin-top:3px}
 .hist .a{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.hist.now{background:rgba(232,184,74,.08);border-radius:10px;padding-left:8px}
+.hist .badge{font-size:10.5px;color:var(--gold);letter-spacing:.06em;text-transform:uppercase}
 .mini{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:5px 10px;font-size:12.5px}
 .empty{color:var(--mut);font-size:13px;text-align:center;padding:8px}
 .footbar{position:fixed;left:0;right:0;bottom:0;z-index:8;background:rgba(6,12,24,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-top:1px solid var(--line);padding:10px 14px calc(env(safe-area-inset-bottom) + 10px)}
@@ -150,6 +152,11 @@ textarea:focus,input:focus,select:focus{outline:2px solid var(--gold);outline-of
       <figure><canvas id="pvNext"></canvas><figcaption>Preview<br>(what Push will show)</figcaption></figure>
       <figure><canvas id="pvLive"></canvas><figcaption id="liveCap">On screens now</figcaption><div class="scr" id="scrList"></div></figure>
     </div>
+  </section>
+
+  <section>
+    <div class="lbl"><span>In rotation <b id="rotCount"></b></span><span><select id="rotInt" class="mini" style="padding:4px 6px"><option value="15">every 15 s</option><option value="20">every 20 s</option><option value="30" selected>every 30 s</option><option value="45">every 45 s</option><option value="60">every 60 s</option></select> &nbsp;<button class="link" id="rotClear">Clear all</button></span></div>
+    <div id="rotation"></div>
   </section>
 
   <section>
@@ -335,6 +342,18 @@ function drawPill(g, text, cy) {
   g.textBaseline = 'alphabetic';
 }
 function dateLine(s) { return [s.date, s.time].filter(Boolean).join('  ·  '); }
+// Rotation: which card a state shows at time `now`, and when it changes next
+function currentCard(st, now) {
+  if (!st) return { card: null, key: 'none', next: 0, idx: 0, n: 0 };
+  if (st.mode !== 'rotate') return { card: st, key: 'st' + st.ts, next: 0, idx: 0, n: 0 };
+  const items = st.items || []; const n = items.length;
+  if (!n) return { card: null, key: 'empty' + st.ts, next: 0, idx: 0, n: 0 };
+  const I = Math.max(5, st.interval || 30) * 1000;
+  const el = Math.max(0, now - st.start);
+  const slot = Math.floor(el / I); const idx = slot % n;
+  const it = items[idx];
+  return { card: Object.assign({ mode: 'quote' }, it), key: it.id + '@' + st.ts, next: n > 1 ? st.start + (slot + 1) * I : 0, idx, n };
+}
 
 // bottom block for quote cards; returns top y of the pill
 function drawBottom(g, s) {
@@ -564,8 +583,17 @@ async function startScreen(key) {
       await new Promise(r => setTimeout(r, instant ? 30 : 950));
     }).catch(e => console.error(e));
   };
-  show(cur, true);
-  addEventListener('resize', () => { fit(); const nk = kOf(); if (nk !== k) { k = nk; show(cur, true); } });
+  let shownKey = null, rotT = null;
+  const tick = (instant) => {
+    clearTimeout(rotT);
+    const c = currentCard(cur, Date.now());
+    if (c.key !== shownKey) { shownKey = c.key; document.body.dataset.shown = c.card && c.card.quote ? c.card.quote : (c.card ? c.card.mode : 'none'); show(c.card, instant); }
+    if (c.next) rotT = setTimeout(() => tick(false), Math.max(200, c.next - Date.now() + 60));
+  };
+  tick(true);
+  // safety net: re-check every 5 s (covers sleep / timer drift)
+  setInterval(() => tick(false), 5000);
+  addEventListener('resize', () => { fit(); const nk = kOf(); if (nk !== k) { k = nk; shownKey = null; tick(true); } });
 
   // full screen + keep awake
   let wl = null;
@@ -604,7 +632,7 @@ async function startScreen(key) {
     onState: (p) => {
       lastMsg = Date.now();
       if (cur && p.ts <= cur.ts) return;
-      cur = p; LS.set('screenState', p); show(p); hb();
+      cur = p; LS.set('screenState', p); tick(false); hb();
     }
   });
   setInterval(hb, 10000);
@@ -639,7 +667,7 @@ async function fileToPhoto(file) {
       g.drawImage(img, (img.width - side) / 2, oy, side, side, 0, 0, N, N);
       return c.toDataURL('image/jpeg', q);
     };
-    return { photo: make(320, 0.8), sm: make(176, 0.78) };
+    return { photo: make(320, 0.8), sm: make(240, 0.78) };
   } finally { URL.revokeObjectURL(url); }
 }
 
@@ -668,11 +696,21 @@ async function startControl(key, secret) {
 
   function payloadQuote() {
     const p = curPerson();
-    return { v: 1, ts: Date.now(), id: rid(), mode: 'quote', session: outS(curSess()), speaker: p ? outP(p) : {}, quote: cleanQuote($('quote').value) };
+    return { v: 2, ts: Date.now(), id: rid(), mode: 'quote', session: outS(curSess()), speaker: p ? outP(p, true) : {}, quote: cleanQuote($('quote').value) };
   }
-  function payloadIdle() {
+  function payloadIdle(items) {
     const s = curSess();
-    return { v: 1, ts: Date.now(), id: rid(), mode: 'idle', session: outS(s), people: s.people.slice(0, 6).map(p => outP(p, true)) };
+    return { v: 2, ts: Date.now(), id: rid(), mode: 'idle', session: outS(s), people: s.people.slice(0, 6).map(p => outP(p, true)), items: items || rotItems(), interval: st.interval };
+  }
+  const rotItems = () => (st.live && st.live.items) || [];
+  function payloadRotate(items) { const now = Date.now(); return { v: 2, ts: now, id: rid(), mode: 'rotate', start: now, interval: st.interval, items }; }
+  function itemFromPayload(p) { return { id: p.id || rid(), ts: p.ts || Date.now(), session: p.session, speaker: p.speaker, quote: p.quote }; }
+  // keep the message small enough for the relays (custom photos are the heavy part)
+  function fitItems(items) {
+    let out = items.slice(0, 40), dropped = 0;
+    while (out.length > 1 && JSON.stringify(out).length > 50000) { out.pop(); dropped++; }
+    if (dropped) toast('Rotation is full: the oldest ' + dropped + ' quote(s) were dropped.', true);
+    return out;
   }
 
   /* ---- render UI ---- */
@@ -707,10 +745,26 @@ async function startControl(key, secret) {
       LS.set('draft', $('quote').value);
     }, 120);
   }
-  function renderLive() {
-    renderTo($('pvLive'), st.live, 0.34);
-    $('liveCap').textContent = st.live ? 'On screens now · ' + new Date(st.live.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'On screens now';
+  let liveKey = null;
+  function renderLive(force) {
+    const c = currentCard(st.live, Date.now());
+    if (force || c.key !== liveKey) { liveKey = c.key; renderTo($('pvLive'), c.card, 0.34); renderRotation(); }
+    let cap = 'On screens now';
+    if (st.live && st.live.mode === 'rotate' && c.n) cap += ` · ${c.idx + 1} of ${c.n}` + (c.next ? ` · next in ${Math.max(0, Math.round((c.next - Date.now()) / 1000))}s` : '');
+    else if (st.live && st.live.mode === 'idle') cap += ' · panel card';
+    $('liveCap').textContent = cap;
+    const resume = st.live && st.live.mode === 'idle' && rotItems().length;
+    $('idleBtn').innerHTML = resume ? 'Resume quotes<br><span style="font-size:11px;color:var(--mut)">(' + rotItems().length + ' in rotation)</span>' : 'Show panel card<br><span style="font-size:11px;color:var(--mut)">(pauses quotes)</span>';
     renderScreens();
+  }
+  function renderRotation() {
+    const items = rotItems(); const c = currentCard(st.live, Date.now());
+    const rotating = st.live && st.live.mode === 'rotate';
+    $('rotCount').textContent = items.length ? '(' + items.length + ')' : '';
+    $('rotation').innerHTML = items.length ? items.map((h, i) => {
+      const src = photoSrc(h.speaker && h.speaker.photo); const now = rotating && i === c.idx;
+      return `<div class="hist ${now ? 'now' : ''}">${src ? `<img src="${src}" alt="">` : ''}<div class="t">${now ? '<div class="badge">On screens now</div>' : ''}<div class="q">\u201C${esc(h.quote)}</div><div class="m">${esc(h.speaker && h.speaker.name)} · ${esc(h.session && h.session.badge)}</div><div class="a"><button class="mini" data-r="now" data-i="${i}">Show now</button><button class="mini" data-r="del" data-i="${i}">Remove</button><button class="mini" data-r="img" data-i="${i}">Save image</button></div></div></div>`;
+    }).join('') : '<div class="empty">Pushed quotes rotate here, one at a time.</div>';
   }
   function renderScreens() {
     const now = Date.now();
@@ -729,10 +783,10 @@ async function startControl(key, secret) {
     $('histCount').textContent = st.history.length ? st.history.length + ' pushed' : '';
     $('history').innerHTML = st.history.length ? st.history.map((h, i) => {
       const src = photoSrc(h.speaker && h.speaker.photo);
-      return `<div class="hist">${src ? `<img src="${src}" alt="">` : ''}<div class="t"><div class="q">“${esc(h.quote)}</div><div class="m">${esc(h.speaker && h.speaker.name)} · ${esc(h.session && h.session.badge)} · ${new Date(h.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div><div class="a"><button class="mini" data-h="re" data-i="${i}">Show again</button><button class="mini" data-h="edit" data-i="${i}">Edit &amp; reuse</button><button class="mini" data-h="img" data-i="${i}">Save image</button></div></div></div>`;
+      return `<div class="hist">${src ? `<img src="${src}" alt="">` : ''}<div class="t"><div class="q">“${esc(h.quote)}</div><div class="m">${esc(h.speaker && h.speaker.name)} · ${esc(h.session && h.session.badge)} · ${new Date(h.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div><div class="a"><button class="mini" data-h="re" data-i="${i}">Show now</button><button class="mini" data-h="edit" data-i="${i}">Edit &amp; reuse</button><button class="mini" data-h="img" data-i="${i}">Save image</button></div></div></div>`;
     }).join('') : '<div class="empty">Quotes you push will appear here.</div>';
   }
-  function renderAll() { renderChips(); renderGrid(); renderCount(); renderPreview(); renderLive(); renderHistory(); }
+  function renderAll() { renderChips(); renderGrid(); renderCount(); renderPreview(); renderLive(true); renderHistory(); }
 
   /* ---- actions ---- */
   async function push(payload) {
@@ -740,19 +794,46 @@ async function startControl(key, secret) {
     try { n = await Sync.publish('state', payload, true); }
     catch (e) { toast('This link cannot push to the screens. Use the editor link from the blue QR code.', true); return -1; }
     st.live = payload; LS.set('liveState', payload);
-    renderLive();
+    renderLive(true);
     if (n === 0) toast('No connection right now. It will send as soon as the connection is back.', true);
-    else toast(payload.mode === 'quote' ? 'Pushed to screens ✓' : 'Panel card on screens ✓');
+    else if (payload._msg) toast(payload._msg);
     return n;
+  }
+  // publish without the local-only _msg field
+  async function send(payload, msg) { const p = Object.assign({}, payload); const n = await push(Object.assign(p, {})); if (n >= 0 && msg && n > 0) toast(msg); return n; }
+  async function setRotation(items, msg, startWith) {
+    items = fitItems(items);
+    if (st.live && st.live.mode === 'idle' && !startWith) return send(Object.assign(payloadIdle(items), { session: st.live.session, people: st.live.people }), msg);
+    return send(payloadRotate(items), msg);
   }
   $('pushBtn').onclick = async () => {
     const p = payloadQuote();
     if (!p.quote || !curPerson()) return;
-    if (await push(p) < 0) return;
-    st.history.unshift(p); st.history = st.history.slice(0, 80); saveHist(); renderHistory();
+    const item = itemFromPayload(p);
+    if (await setRotation([item].concat(rotItems()), 'Pushed ✓ Showing now, then rotating', true) < 0) return;
+    st.history.unshift(item); st.history = st.history.slice(0, 80); saveHist(); renderHistory();
     $('quote').value = ''; LS.set('draft', ''); renderCount(); renderPreview();
   };
-  $('idleBtn').onclick = () => push(payloadIdle());
+  $('idleBtn').onclick = () => {
+    if (st.live && st.live.mode === 'idle' && rotItems().length) return send(payloadRotate(rotItems()), 'Quotes rotating again ✓');
+    return send(payloadIdle(), 'Panel card on screens ✓ (quotes paused)');
+  };
+  st.interval = LS.get('interval', 30); $('rotInt').value = String(st.interval);
+  $('rotInt').onchange = () => { st.interval = +$('rotInt').value; LS.set('interval', st.interval); if (st.live && st.live.mode === 'rotate') send(payloadRotate(rotItems()), 'Timing updated ✓'); };
+  $('rotClear').onclick = (e) => {
+    const b = e.target; if (!rotItems().length) return;
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'Tap again to clear'; setTimeout(() => { delete b.dataset.sure; b.textContent = 'Clear all'; }, 3000); return; }
+    delete b.dataset.sure; b.textContent = 'Clear all';
+    send(payloadIdle([]), 'Rotation cleared. Panel card on screens.');
+  };
+  $('rotation').addEventListener('click', async e => {
+    const b = e.target.closest('[data-r]'); if (!b) return;
+    const items = rotItems().slice(); const i = +b.dataset.i; const it = items[i]; if (!it) return;
+    if (b.dataset.r === 'img') return saveImage(Object.assign({ mode: 'quote' }, it));
+    if (b.dataset.r === 'del') { items.splice(i, 1); return items.length ? setRotation(items, 'Removed from rotation') : send(payloadIdle([]), 'Rotation empty. Panel card on screens.'); }
+    if (b.dataset.r === 'now') { const order = items.slice(i).concat(items.slice(0, i)); return setRotation(order, 'Showing now ✓', true); }
+  });
+  setInterval(() => renderLive(false), 1000);
   $('quote').addEventListener('input', () => { renderCount(); renderPreview(); });
   $('clearQ').onclick = () => { $('quote').value = ''; renderCount(); renderPreview(); $('quote').focus(); };
   $('chips').addEventListener('click', e => {
@@ -769,13 +850,17 @@ async function startControl(key, secret) {
   $('history').addEventListener('click', async e => {
     const b = e.target.closest('[data-h]'); if (!b) return;
     const h = st.history[+b.dataset.i]; if (!h) return;
-    if (b.dataset.h === 're') { const p = Object.assign(clone(h), { ts: Date.now(), id: rid() }); await push(p); }
+    if (b.dataset.h === 're') {
+      const items = rotItems(); const at = items.findIndex(x => x.id === h.id);
+      const order = at >= 0 ? items.slice(at).concat(items.slice(0, at)) : [itemFromPayload(h)].concat(items);
+      await setRotation(order, at >= 0 ? 'Showing now ✓' : 'Added back to rotation ✓', true);
+    }
     else if (b.dataset.h === 'edit') { $('quote').value = h.quote; renderCount(); renderPreview(); window.scrollTo({ top: $('quote').getBoundingClientRect().top + scrollY - 120, behavior: 'smooth' }); }
     else if (b.dataset.h === 'img') saveImage(h);
   });
   async function saveImage(h) {
     toast('Preparing image…');
-    const c = document.createElement('canvas'); await renderTo(c, h, 1);
+    const c = document.createElement('canvas'); await renderTo(c, Object.assign({}, h, { mode: 'quote' }), 1);
     const blob = await new Promise(r => c.toBlob(r, 'image/png'));
     const nm = 'quote-' + (h.speaker && h.speaker.name || 'speaker').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '-' + new Date(h.ts).toISOString().slice(11, 16).replace(':', '') + '.png';
     const file = new File([blob], nm, { type: 'image/png' });
@@ -868,7 +953,7 @@ async function startControl(key, secret) {
   renderAll();
   try { await Sync.init(key, 'control', {
     onStatus: renderScreens,
-    onState: (p) => { if (!st.live || p.ts > st.live.ts) { st.live = p; LS.set('liveState', p); renderLive(); } },
+    onState: (p) => { if (!st.live || p.ts > st.live.ts) { st.live = p; LS.set('liveState', p); renderLive(true); } },
     onHb: (p) => { if (!p || !p.id) return; st.screens[p.id] = { seen: Date.now(), shown: p.shown || 0 }; renderScreens(); }
   }, secret); } catch (e) {
     $('pushBtn').disabled = true; $('idleBtn').disabled = true;
