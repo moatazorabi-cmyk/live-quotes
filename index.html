@@ -53,7 +53,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:16px;
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .sp{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px 6px 9px;text-align:center;position:relative}
 .sp img,.sp .ph{width:68px;height:68px;border-radius:50%;object-fit:cover;display:block;margin:0 auto 6px;border:3px solid transparent;background:#fff}
-.sp .ph{display:flex;align-items:center;justify-content:center;color:#456;font-size:26px;background:#dfe6ef}
+.sp .ph{display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:24px;font-weight:600;background:linear-gradient(135deg,#1b3158,#0c1830);border:3px solid rgba(232,184,74,.5)}
 .sp .n{font-size:12.5px;line-height:1.25;font-weight:500}
 .sp .r{font-size:10.5px;color:var(--gold);letter-spacing:.06em;text-transform:uppercase;margin-top:2px}
 .sp.on{border-color:var(--gold);background:#2a2614}
@@ -219,6 +219,11 @@ function loadImg(src) {
   const p = new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
   imgCache.set(src, p); return p;
 }
+function initials(name) {
+  const w = String(name || '').replace(/^(mr|mrs|ms|miss|dr|eng|prof|h\.?e)\.?\s+/i, '').trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return '?';
+  return ((w[0][0] || '') + (w.length > 1 ? w[w.length - 1][0] : '')).toUpperCase();
+}
 const photoSrc = (ref) => !ref ? null : (ref.startsWith('data:') ? ref : (D.photos[ref] || null));
 let fontsP = null;
 function fontsReady() {
@@ -325,7 +330,14 @@ async function drawPhoto(g, sp, cx, cy, r, ring) {
     const k = (2 * r) / (c[2] * side);
     g.drawImage(img, cx - r - (ox + c[0] * side) * k, cy - r - (oy + c[1] * side) * k, img.width * k, img.height * k);
   } else {
-    g.fillStyle = '#dfe6ef'; g.fillRect(cx - r, cy - r, 2 * r, 2 * r);
+    // no photo: initials monogram (gold on navy)
+    const bgr = g.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
+    bgr.addColorStop(0, '#1b3158'); bgr.addColorStop(1, '#0c1830');
+    g.fillStyle = bgr; g.fillRect(cx - r, cy - r, 2 * r, 2 * r);
+    g.fillStyle = GOLD; g.font = `600 ${Math.round(r * 0.72)}px Poppins`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(initials(sp.name), cx, cy + r * 0.04);
+    g.textBaseline = 'alphabetic';
   }
   g.restore();
   g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.strokeStyle = GOLD; g.lineWidth = ring; g.stroke();
@@ -675,14 +687,14 @@ async function startControl(key, secret) {
   $('control').classList.remove('hidden');
   const st = {
     sid: LS.get('sid', D.sessions[0].id), pid: LS.get('pid', null),
-    sessEdits: LS.get('sessEdits', {}), personEdits: LS.get('personEdits', {}), custom: LS.get('custom', {}), removed: LS.get('removed', {}),
+    sessEdits: LS.get('sessEdits', {}), personEdits: LS.get('personEdits', {}), custom: LS.get('custom', {}), removed: LS.get('removed', {}), newSessions: LS.get('newSessions', []),
     history: LS.get('history', []), live: LS.get('liveState', null), screens: {}
   };
-  const save = () => { LS.set('sid', st.sid); LS.set('pid', st.pid); LS.set('sessEdits', st.sessEdits); LS.set('personEdits', st.personEdits); LS.set('custom', st.custom); LS.set('removed', st.removed); };
+  const save = () => { LS.set('sid', st.sid); LS.set('pid', st.pid); LS.set('sessEdits', st.sessEdits); LS.set('personEdits', st.personEdits); LS.set('custom', st.custom); LS.set('removed', st.removed); LS.set('newSessions', st.newSessions); };
   const saveHist = () => { while (!LS.set('history', st.history) && st.history.length > 5) st.history.pop(); };
 
   function sessions() {
-    return D.sessions.map(s => {
+    return D.sessions.concat(st.newSessions.map(x => Object.assign({ people: [], added: true }, x))).map(s => {
       const e = st.sessEdits[s.id] || {};
       const people = s.people.filter(p => !st.removed[p.id]).map(p => Object.assign({}, p, st.personEdits[p.id] || {}))
         .concat((st.custom[s.id] || []));
@@ -715,14 +727,14 @@ async function startControl(key, secret) {
 
   /* ---- render UI ---- */
   function renderChips() {
-    $('chips').innerHTML = sessions().map(s => `<button class="chip ${s.id === st.sid ? 'on' : ''}" data-s="${s.id}"><div class="c1">${esc(s.badge)}</div><div class="c2">${esc(s.short || s.title)}</div><div class="c3">${esc(s.day || s.date || 'Date to be confirmed')}</div></button>`).join('');
+    $('chips').innerHTML = sessions().map(s => `<button class="chip ${s.id === st.sid ? 'on' : ''}" data-s="${s.id}"><div class="c1">${esc(s.badge)}</div><div class="c2">${esc(s.short || s.title)}</div><div class="c3">${esc(s.day || s.date || 'Date to be confirmed')}</div></button>`).join('') + '<button class="chip" id="addSess" style="border-style:dashed;color:var(--cyan);min-width:96px"><div class="c1" style="color:var(--cyan)">+ New</div><div class="c2">Add session</div><div class="c3">&nbsp;</div></button>';
     const on = $('chips').querySelector('.on'); if (on) on.scrollIntoView({ inline: 'center', block: 'nearest' });
   }
   function renderGrid() {
     const s = curSess();
     $('grid').innerHTML = s.people.map(p => {
       const src = photoSrc(p.photo);
-      return `<button class="sp ${p.id === st.pid ? 'on' : ''}" data-p="${p.id}">${src ? `<img src="${src}" alt="">` : '<div class="ph">?</div>'}<div class="n">${esc(p.name)}</div>${/moderator/i.test(p.role || '') ? '<div class="r">Moderator</div>' : ''}</button>`;
+      return `<button class="sp ${p.id === st.pid ? 'on' : ''}" data-p="${p.id}">${src ? `<img src="${src}" alt="">` : `<div class="ph">${esc(initials(p.name))}</div>`}<div class="n">${esc(p.name)}</div>${/moderator/i.test(p.role || '') ? '<div class="r">Moderator</div>' : ''}</button>`;
     }).join('') + `<button class="sp add" id="addSp"><span class="plus">+</span><span style="font-size:12px;margin-top:4px">Add speaker</span></button>`;
   }
   function renderCount() {
@@ -853,6 +865,7 @@ async function startControl(key, secret) {
   $('quote').addEventListener('input', () => { renderCount(); renderPreview(); });
   $('clearQ').onclick = () => { $('quote').value = ''; renderCount(); renderPreview(); $('quote').focus(); };
   $('chips').addEventListener('click', e => {
+    if (e.target.closest('#addSess')) return editSession(null);
     const b = e.target.closest('.chip'); if (!b) return;
     st.sid = b.dataset.s; if (!curPerson()) st.pid = null;
     const ppl = curSess().people; if (ppl.length === 1) st.pid = ppl[0].id;
@@ -891,22 +904,39 @@ async function startControl(key, secret) {
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   }
 
-  $('editSession').onclick = () => {
-    const s = curSess();
-    sheet(`<h3>Edit session</h3>
+  $('editSession').onclick = () => editSession(curSess());
+  function editSession(s) {
+    const isNew = !s; s = s || { badge: 'Session', title: '', date: '', time: '' };
+    sheet(`<h3>${isNew ? 'Add a session' : 'Edit session'}</h3>
       <div class="f"><label>Badge (shown in the gold pill)</label><input id="eB" value="${esc(s.badge)}"></div>
       <div class="f"><label>Session title on the card (keep it short)</label><input id="eT" value="${esc(s.title)}"></div>
       <div class="row"><div class="f"><label>Date line</label><input id="eD" value="${esc(s.date)}" placeholder="Tuesday 17 November 2026"></div></div>
       <div class="f"><label>Time (panel card only)</label><input id="eTm" value="${esc(s.time)}" placeholder="10:30 – 12:00"></div>
-      <div class="acts"><button id="eX">Cancel</button><button class="del" id="eR">Reset</button><button class="pri" id="eS">Save</button></div>`, (el, close) => {
+      <div class="acts"><button id="eX">Cancel</button>${isNew ? '' : s.added ? '<button class="del" id="eR">Delete session</button>' : '<button class="del" id="eR">Reset</button>'}<button class="pri" id="eS">${isNew ? 'Add session' : 'Save'}</button></div>`, (el, close) => {
       el.querySelector('#eX').onclick = close;
-      el.querySelector('#eR').onclick = () => { delete st.sessEdits[s.id]; save(); close(); renderAll(); };
+      const del = el.querySelector('#eR');
+      if (del) del.onclick = () => {
+        if (s.added) {
+          if (!del.dataset.sure) { del.dataset.sure = 1; del.textContent = 'Tap again to delete'; return; }
+          st.newSessions = st.newSessions.filter(x => x.id !== s.id); delete st.custom[s.id]; delete st.sessEdits[s.id];
+          st.sid = D.sessions[0].id; st.pid = null; save(); close(); renderAll(); toast('Session deleted');
+        } else { delete st.sessEdits[s.id]; save(); close(); renderAll(); }
+      };
       el.querySelector('#eS').onclick = () => {
-        st.sessEdits[s.id] = { badge: el.querySelector('#eB').value.trim(), title: el.querySelector('#eT').value.trim(), date: el.querySelector('#eD').value.trim(), time: el.querySelector('#eTm').value.trim() };
-        save(); close(); renderAll(); toast('Session updated');
+        const v = { badge: el.querySelector('#eB').value.trim(), title: el.querySelector('#eT').value.trim(), date: el.querySelector('#eD').value.trim(), time: el.querySelector('#eTm').value.trim() };
+        if (!v.title && !v.badge) return toast('Add a badge or a title', true);
+        if (isNew) {
+          const id = 'ns_' + rid();
+          st.newSessions.push(Object.assign({ id, short: v.title || v.badge, day: v.date ? v.date.replace(/ 2026$/, '') : 'Date TBC' }, v));
+          st.sid = id; st.pid = null; save(); close(); renderAll(); toast('Session added. Now add its speakers with + Add speaker');
+        } else {
+          if (s.added) st.newSessions = st.newSessions.map(x => x.id === s.id ? Object.assign({}, x, v, { short: v.title || v.badge, day: v.date ? v.date.replace(/ 2026$/, '') : 'Date TBC' }) : x);
+          else st.sessEdits[s.id] = v;
+          save(); close(); renderAll(); toast('Session updated');
+        }
       };
     });
-  };
+  }
   $('editSpeaker').onclick = () => { const p = curPerson(); if (!p) return toast('Pick a speaker first'); editPerson(p); };
 
   function editPerson(p) {
@@ -917,7 +947,7 @@ async function startControl(key, secret) {
       <div class="f"><label>Name (with Mr. / Ms. / Dr.)</label><input id="pN" value="${esc(p && p.name)}"></div>
       <div class="f"><label>Title</label><input id="pT" value="${esc(p && p.title)}"></div>
       <div class="f"><label>Organisation</label><input id="pO" value="${esc(p && p.org)}"></div>
-      <div class="f"><label>Role</label><select id="pR"><option>Speaker</option><option ${p && /moderator/i.test(p.role) ? 'selected' : ''}>Moderator</option></select></div>
+      <div class="f"><label>Role</label><select id="pR"><option>Speaker</option><option ${p && /moderator/i.test(p.role) ? 'selected' : ''}>Moderator</option><option value="None" ${p && p.role === 'None' ? 'selected' : ''}>None (no label)</option></select></div>
       <div class="acts"><button id="pX">Cancel</button>${isNew ? '' : '<button class="del" id="pD">' + (isCustom ? 'Delete' : 'Remove') + '</button>'}<button class="pri" id="pS">Save</button></div>`, (el, close) => {
       el.querySelector('#pF').onchange = async (e) => {
         const f = e.target.files[0]; if (!f) return;
